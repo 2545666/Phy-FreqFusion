@@ -190,7 +190,7 @@ class MetricTracker:
         self.uciqe_vals = []
         self.uiqm_vals = []
 
-    def update(self, pred, gt):
+    def update(self, pred, git=None):
         """pred, gt: (C,H,W) tensors in [0,1]."""
        # 如果有真值图，计算全参考指标
         if gt is not None:
