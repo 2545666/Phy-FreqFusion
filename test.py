@@ -148,27 +148,52 @@ def evaluate(args):
 
 
 def infer(args):
-    """Inference-only mode (no ground truth)."""
+    """Inference-only mode (no ground truth) + No-Reference metrics."""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = build_model(args, device)
 
+    # TestDataset 专门读取没有任何分类、全是图片的文件夹
     ds = TestDataset(args.input_dir, args.img_size)
     loader = DataLoader(ds, batch_size=1, shuffle=False)
 
     os.makedirs(args.output_dir, exist_ok=True)
-    print(f"\nProcessing {len(ds)} images...")
+    print(f"\nProcessing {len(ds)} images for Zero-Shot Generalization...")
+
+    tracker = MetricTracker()
+    times = []
 
     with torch.no_grad():
         for batch in loader:
             inp = batch['input'].to(device)
             fname = batch['filename'][0]
 
+            t0 = time.time()
             out = model(inp)
+            torch.cuda.synchronize() if device.type == 'cuda' else None
+            times.append(time.time() - t0)
+
             pred = out['J_pred'][0]
             
+            # 关键修改：gt 传 None，触发仅计算 UCIQE 和 UIQM
+            tracker.update(pred, gt=None)
+            
+            # 保存原图、预测图和透射率图的组合可视化
             save_visual(inp[0], pred, None, out['t_c'][0],
                        fname, args.output_dir)
             print(f"  Processed: {fname}")
+
+    # 获取跑分并打印
+    metrics = tracker.summary()
+    avg_time = np.mean(times) * 1000
+
+    print(f"\n{'='*55}")
+    print(f"  Zero-Shot Generalization Results (No Ground Truth)")
+    print(f"{'='*55}")
+    print(f"  UCIQE: {metrics['UCIQE']:.4f} (Higher is better)")
+    print(f"  UIQM:  {metrics['UIQM']:.4f} (Higher is better)")
+    print(f"  Avg Inference Time: {avg_time:.1f} ms")
+    print(f"{'='*55}")
+    print(f"Enhanced images saved to: {args.output_dir}")
 
     print(f"\nResults saved to: {args.output_dir}")
 

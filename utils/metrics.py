@@ -192,15 +192,19 @@ class MetricTracker:
 
     def update(self, pred, gt):
         """pred, gt: (C,H,W) tensors in [0,1]."""
-        self.psnr_vals.append(calc_psnr(pred, gt))
-        self.ssim_vals.append(calc_ssim(pred.unsqueeze(0), gt.unsqueeze(0)))
+       # 如果有真值图，计算全参考指标
+        if gt is not None:
+            self.psnr_vals.append(calc_psnr(pred, gt))
+            self.ssim_vals.append(calc_ssim(pred.unsqueeze(0), gt.unsqueeze(0)))
+        
+        # 无论有没有真值图，都计算无参考指标（视觉感知指标）
         self.uciqe_vals.append(calc_uciqe(pred))
         self.uiqm_vals.append(calc_uiqm(pred))
-
     def summary(self):
-        return {
-            'PSNR': np.mean(self.psnr_vals),
-            'SSIM': np.mean(self.ssim_vals),
-            'UCIQE': np.mean(self.uciqe_vals),
-            'UIQM': np.mean(self.uiqm_vals),
-        }
+        res = {}
+        if self.psnr_vals:
+            res['PSNR'] = np.mean(self.psnr_vals)
+            res['SSIM'] = np.mean(self.ssim_vals)
+        res['UCIQE'] = np.mean(self.uciqe_vals)
+        res['UIQM'] = np.mean(self.uiqm_vals)
+        return res
