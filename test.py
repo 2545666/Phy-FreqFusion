@@ -120,7 +120,8 @@ def evaluate(args):
 
             t0 = time.time()
             out = model(inp)
-            torch.cuda.synchronize() if device.type == 'cuda' else None
+            if device.type == 'cuda':
+                torch.cuda.synchronize()
             times.append(time.time() - t0)
 
             pred = out['J_pred'][0]
@@ -137,8 +138,8 @@ def evaluate(args):
     print(f"\n{'='*50}")
     print(f"  Results: {args.variant} on {args.dataset.upper()}")
     print(f"{'='*50}")
-    print(f"  PSNR:  {metrics['PSNR']:.2f} dB")
-    print(f"  SSIM:  {metrics['SSIM']:.4f}")
+    print(f"  PSNR:  {metrics.get('PSNR', 0):.2f} dB")
+    print(f"  SSIM:  {metrics.get('SSIM', 0):.4f}")
     print(f"  UCIQE: {metrics['UCIQE']:.4f}")
     print(f"  UIQM:  {metrics['UIQM']:.4f}")
     print(f"  Avg Inference Time: {avg_time:.1f} ms")
@@ -169,7 +170,8 @@ def infer(args):
 
             t0 = time.time()
             out = model(inp)
-            torch.cuda.synchronize() if device.type == 'cuda' else None
+            if device.type == 'cuda':
+                torch.cuda.synchronize()
             times.append(time.time() - t0)
 
             pred = out['J_pred'][0]
@@ -194,8 +196,6 @@ def infer(args):
     print(f"  Avg Inference Time: {avg_time:.1f} ms")
     print(f"{'='*55}")
     print(f"Enhanced images saved to: {args.output_dir}")
-
-    print(f"\nResults saved to: {args.output_dir}")
 
 
 if __name__ == '__main__':

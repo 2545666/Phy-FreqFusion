@@ -190,9 +190,9 @@ class MetricTracker:
         self.uciqe_vals = []
         self.uiqm_vals = []
 
-    def update(self, pred, git=None):
+    def update(self, pred, gt=None):
         """pred, gt: (C,H,W) tensors in [0,1]."""
-       # 如果有真值图，计算全参考指标
+        # 如果有真值图，计算全参考指标
         if gt is not None:
             self.psnr_vals.append(calc_psnr(pred, gt))
             self.ssim_vals.append(calc_ssim(pred.unsqueeze(0), gt.unsqueeze(0)))
@@ -200,8 +200,10 @@ class MetricTracker:
         # 无论有没有真值图，都计算无参考指标（视觉感知指标）
         self.uciqe_vals.append(calc_uciqe(pred))
         self.uiqm_vals.append(calc_uiqm(pred))
+
     def summary(self):
         res = {}
+        # 只有在 psnr_vals 不为空时才计算平均值，防止报错
         if self.psnr_vals:
             res['PSNR'] = np.mean(self.psnr_vals)
             res['SSIM'] = np.mean(self.ssim_vals)
