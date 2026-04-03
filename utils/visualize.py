@@ -2,10 +2,11 @@
 Visualization utilities for paper figures.
 
 Generates:
-  - Side-by-side visual quality comparisons (Fig. 2 in paper)
+  - Side-by-side visual quality comparisons (Fig. 2 / Fig. 3 in paper)
   - Transmission map heatmaps
   - Ablation comparison grids
-  - Metric bar charts
+  - Metric bar charts (including new SOTA methods: PUGAN, SUT, etc.)
+  - Quantitative LaTeX tables
 """
 
 import os
@@ -13,7 +14,12 @@ import numpy as np
 import torch
 import torchvision.transforms.functional as TF
 from PIL import Image, ImageDraw, ImageFont
+from collections import OrderedDict
 
+
+# =====================================================================
+#  Core utilities
+# =====================================================================
 
 def tensor_to_numpy(t):
     """(C,H,W) tensor [0,1] -> (H,W,C) numpy uint8."""
@@ -35,10 +41,14 @@ def make_colormap(gray_np, colormap='jet'):
     return (colored * 255).astype(np.uint8)
 
 
+# =====================================================================
+#  Transmission map visualization
+# =====================================================================
+
 def transmission_heatmap(t_c):
     """
     Visualize 3-channel transmission map as RGB heatmap.
-    
+
     Args:
         t_c: (3, H, W) tensor or numpy
     Returns:
@@ -55,7 +65,7 @@ def channel_transmission_vis(t_c):
     """
     Visualize per-channel (R/G/B) transmission maps side-by-side.
     Useful to show wideband attenuation differences.
-    
+
     Args:
         t_c: (3, H, W) tensor
     Returns:
@@ -63,24 +73,30 @@ def channel_transmission_vis(t_c):
     """
     if isinstance(t_c, torch.Tensor):
         t_c = t_c.detach().cpu().numpy()
-    
+
     channel_maps = []
     colormaps = ['Reds', 'Greens', 'Blues']
     for c in range(3):
         ch = t_c[c]
         ch_norm = (ch - ch.min()) / (ch.max() - ch.min() + 1e-8)
         channel_maps.append(make_colormap(ch_norm, colormaps[c]))
-    
+
     return np.concatenate(channel_maps, axis=1)
 
 
-def add_label(img_np, text, position='bottom', fontsize=16, color=(255, 255, 255)):
+# =====================================================================
+#  Text label overlay
+# =====================================================================
+
+def add_label(img_np, text, position='bottom', fontsize=16,
+              color=(255, 255, 255)):
     """Add text label to image."""
     img = Image.fromarray(img_np)
     draw = ImageDraw.Draw(img)
-    
+
     try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", fontsize)
+        font = ImageFont.truetype(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", fontsize)
     except (OSError, IOError):
         font = ImageFont.load_default()
 
@@ -104,13 +120,21 @@ def add_label(img_np, text, position='bottom', fontsize=16, color=(255, 255, 255
     return np.array(img)
 
 
+# =====================================================================
+#  Side-by-side comparison figure  (Fig. 3 style)
+# =====================================================================
+
 def make_comparison_figure(images_dict, save_path=None, title=None):
     """
     Create side-by-side comparison figure for the paper.
-    
+
+    Seamlessly supports any number of methods, including new SOTA
+    baselines like PUGAN and SUT.
+
     Args:
         images_dict: OrderedDict of {label: (C,H,W) tensor or (H,W,C) numpy}
-                     e.g., {'Input': img, 'DCP': img, 'Ours': img, 'GT': img}
+                     e.g., {'Input': img, 'DCP': img, 'PUGAN': img,
+                            'SUT': img, 'Ours': img, 'GT': img}
         save_path:   where to save
         title:       optional super-title
     Returns:
@@ -141,7 +165,8 @@ def make_comparison_figure(images_dict, save_path=None, title=None):
         title_img = Image.fromarray(title_bar)
         draw = ImageDraw.Draw(title_img)
         try:
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16)
+            font = ImageFont.truetype(
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16)
         except (OSError, IOError):
             font = ImageFont.load_default()
         bbox = draw.textbbox((0, 0), title, font=font)
@@ -155,14 +180,66 @@ def make_comparison_figure(images_dict, save_path=None, title=None):
     return result
 
 
+def make_comparison_from_dirs(method_dirs, image_name, save_path=None,
+                              img_size=256):
+    """
+    Convenience wrapper: build a comparison figure from folders on disk.
+
+    This makes it easy to add PUGAN / SUT results stored as folders of
+    enhanced images.
+
+    Args:
+        method_dirs: OrderedDict of {label: directory_path}
+                     e.g., OrderedDict([
+                         ('Input',    './data/UIEB/raw'),
+                         ('WaterNet', './results/WaterNet'),
+                         ('PUGAN',    './results/PUGAN'),
+                         ('SUT',      './results/SUT'),
+                         ('Ours',     './results/Ours'),
+                         ('GT',       './data/UIEB/reference'),
+                     ])
+        image_name:  filename stem (e.g., '100') — tries common extensions
+        save_path:   output file path
+        img_size:    resize all images to this square size
+    """
+    from pathlib import Path
+
+    images = OrderedDict()
+    exts = ['.png', '.jpg', '.jpeg', '.bmp']
+
+    for label, dirpath in method_dirs.items():
+        found = False
+        for ext in exts:
+            candidate = Path(dirpath) / f'{image_name}{ext}'
+            if candidate.exists():
+                img = Image.open(str(candidate)).convert('RGB')
+                img = TF.resize(img, img_size)
+                img = TF.center_crop(img, img_size)
+                images[label] = TF.to_tensor(img)
+                found = True
+                break
+        if not found:
+            # Create a placeholder (grey image with label)
+            placeholder = np.ones((img_size, img_size, 3),
+                                  dtype=np.uint8) * 128
+            placeholder = add_label(placeholder, 'N/A', position='top')
+            images[label] = placeholder
+
+    return make_comparison_figure(images, save_path=save_path)
+
+
+# =====================================================================
+#  Ablation comparison grid
+# =====================================================================
+
 def make_ablation_grid(ablation_dict, save_path=None):
     """
     Create ablation comparison grid.
-    
+
     Args:
         ablation_dict: {
             'image_name': {
-                'Input': tensor, 'w/o Physics': tensor, 
+                'Input': tensor, 'w/o Physics': tensor,
                 'w/o FFT': tensor, 'w/o SNR Gate': tensor,
                 'Full (Ours)': tensor, 'GT': tensor
             }
@@ -178,10 +255,11 @@ def make_ablation_grid(ablation_dict, save_path=None):
     padded = []
     for r in rows:
         if r.shape[1] < max_w:
-            pad = np.ones((r.shape[0], max_w - r.shape[1], 3), dtype=np.uint8) * 255
+            pad = np.ones((r.shape[0], max_w - r.shape[1], 3),
+                          dtype=np.uint8) * 255
             r = np.concatenate([r, pad], axis=1)
         padded.append(r)
-    
+
     sep = np.ones((3, max_w, 3), dtype=np.uint8) * 200
     result = padded[0]
     for r in padded[1:]:
@@ -193,18 +271,178 @@ def make_ablation_grid(ablation_dict, save_path=None):
     return result
 
 
-def make_metric_table_latex(results_dict, metrics=('PSNR', 'SSIM', 'UCIQE', 'UIQM')):
+# =====================================================================
+#  Quantitative bar charts  (Fig. 6 style, extended for new SOTA)
+# =====================================================================
+
+def make_metric_bar_chart(results_dict, metrics=('PSNR', 'SSIM', 'UCIQE', 'UIQM'),
+                          save_path=None, title=None, highlight='Ours'):
+    """
+    Generate a grouped bar chart comparing methods across metrics.
+
+    Designed to be easily extended with new baselines (PUGAN, SUT, etc.)
+    by simply adding entries to results_dict.
+
+    Args:
+        results_dict: OrderedDict of {method: {metric: value}}
+            e.g., OrderedDict([
+                ('DCP',       {'PSNR': 16.2, 'SSIM': 0.72, ...}),
+                ('WaterNet',  {'PSNR': 19.5, 'SSIM': 0.82, ...}),
+                ('PUGAN',     {'PSNR': 21.8, 'SSIM': 0.88, ...}),
+                ('SUT',       {'PSNR': 22.3, 'SSIM': 0.89, ...}),
+                ('Ours',      {'PSNR': 23.1, 'SSIM': 0.91, ...}),
+            ])
+        metrics:   tuple of metric names to plot
+        save_path: output path (PDF recommended)
+        title:     figure title
+        highlight: method name to highlight with a distinct color
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    plt.rcParams.update({
+        'font.family': 'serif',
+        'font.serif': ['Times New Roman', 'DejaVu Serif'],
+        'font.size': 10,
+        'savefig.dpi': 300,
+        'savefig.bbox': 'tight',
+    })
+
+    methods = list(results_dict.keys())
+    n_methods = len(methods)
+    n_metrics = len(metrics)
+
+    fig, axes = plt.subplots(1, n_metrics, figsize=(3.2 * n_metrics, 3.5))
+    if n_metrics == 1:
+        axes = [axes]
+
+    # Colour palette: use a qualitative colourmap with highlight
+    base_colors = plt.cm.Set2(np.linspace(0, 1, n_methods))
+    highlight_color = np.array([0.85, 0.15, 0.15, 1.0])  # red
+
+    for ax_idx, metric in enumerate(metrics):
+        ax = axes[ax_idx]
+        vals = [results_dict[m].get(metric, 0) for m in methods]
+        colors = []
+        for i, m in enumerate(methods):
+            if m == highlight:
+                colors.append(highlight_color)
+            else:
+                colors.append(base_colors[i])
+
+        bars = ax.bar(range(n_methods), vals, color=colors,
+                      edgecolor='grey', linewidth=0.5, width=0.65)
+
+        # Value labels on top of bars
+        for bar, val in zip(bars, vals):
+            fmt = f'{val:.2f}' if metric == 'PSNR' else f'{val:.3f}'
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
+                    fmt, ha='center', va='bottom', fontsize=8,
+                    fontweight='bold')
+
+        ax.set_xticks(range(n_methods))
+        ax.set_xticklabels(methods, rotation=35, ha='right', fontsize=8)
+
+        unit = ' (dB)' if metric == 'PSNR' else ''
+        ax.set_ylabel(f'{metric}{unit}')
+        ax.set_title(metric, fontsize=11, fontweight='bold')
+        ax.grid(axis='y', alpha=0.3, linestyle='--')
+
+        # Tighten y-axis range for visual impact
+        ymin = min(vals) * 0.92 if min(vals) > 0 else 0
+        ymax = max(vals) * 1.08
+        ax.set_ylim(ymin, ymax)
+
+    if title:
+        fig.suptitle(title, fontsize=13, fontweight='bold', y=1.02)
+
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path)
+        plt.close(fig)
+        print(f"Saved metric bar chart: {save_path}")
+    else:
+        plt.close(fig)
+
+    return fig
+
+
+def make_radar_chart(results_dict, metrics=('PSNR', 'SSIM', 'UCIQE', 'UIQM'),
+                     save_path=None, title=None):
+    """
+    Generate a radar (spider) chart comparing methods. Particularly
+    useful when the number of methods is large and bar charts become
+    cluttered.
+
+    All metrics are min-max normalised to [0, 1] for the chart.
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    methods = list(results_dict.keys())
+    N = len(metrics)
+
+    # Normalise each metric to [0, 1]
+    raw = {m: [results_dict[meth].get(m, 0) for meth in methods]
+           for m in metrics}
+    norm = {}
+    for m in metrics:
+        vals = np.array(raw[m])
+        lo, hi = vals.min(), vals.max()
+        norm[m] = (vals - lo) / (hi - lo + 1e-8)
+
+    angles = np.linspace(0, 2 * np.pi, N, endpoint=False).tolist()
+    angles += angles[:1]  # close the polygon
+
+    fig, ax = plt.subplots(figsize=(6, 6), subplot_kw=dict(polar=True))
+    colors = plt.cm.tab10(np.linspace(0, 1, len(methods)))
+
+    for i, meth in enumerate(methods):
+        values = [norm[m][i] for m in metrics]
+        values += values[:1]
+        ax.plot(angles, values, '-o', linewidth=1.5, markersize=5,
+                label=meth, color=colors[i])
+        ax.fill(angles, values, alpha=0.08, color=colors[i])
+
+    ax.set_xticks(angles[:-1])
+    ax.set_xticklabels(metrics, fontsize=11)
+    ax.set_ylim(0, 1.05)
+    ax.legend(loc='upper right', bbox_to_anchor=(1.35, 1.1), fontsize=9)
+
+    if title:
+        ax.set_title(title, fontsize=13, fontweight='bold', pad=20)
+
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path)
+        plt.close(fig)
+        print(f"Saved radar chart: {save_path}")
+    else:
+        plt.close(fig)
+
+    return fig
+
+
+# =====================================================================
+#  LaTeX table generators
+# =====================================================================
+
+def make_metric_table_latex(results_dict,
+                            metrics=('PSNR', 'SSIM', 'UCIQE', 'UIQM')):
     """
     Generate LaTeX table for quantitative comparison.
-    
+    Supports arbitrary methods — just add new entries to results_dict.
+
     Args:
         results_dict: {
             'DCP':       {'PSNR': 16.2, 'SSIM': 0.72, ...},
             'WaterNet':  {'PSNR': 19.5, 'SSIM': 0.82, ...},
+            'PUGAN':     {'PSNR': 21.8, 'SSIM': 0.88, ...},
+            'SUT':       {'PSNR': 22.3, 'SSIM': 0.89, ...},
             'Ours':      {'PSNR': 23.1, 'SSIM': 0.91, ...},
         }
-    Returns:
-        LaTeX string
     """
     methods = list(results_dict.keys())
 
@@ -243,7 +481,7 @@ def make_metric_table_latex(results_dict, metrics=('PSNR', 'SSIM', 'UCIQE', 'UIQ
                 s = f'{val:.4f}'
             else:
                 s = f'{val:.3f}'
-            
+
             if name == best[m]:
                 s = r'\textbf{' + s + '}'
             elif name == second_best.get(m):
@@ -262,7 +500,7 @@ def make_metric_table_latex(results_dict, metrics=('PSNR', 'SSIM', 'UCIQE', 'UIQ
 def make_ablation_table_latex(ablation_results):
     """
     Generate LaTeX table for ablation study.
-    
+
     Args:
         ablation_results: {
             'Full (Ours)':  {'PSNR': 23.1, 'SSIM': 0.91},
@@ -279,7 +517,8 @@ def make_ablation_table_latex(ablation_results):
         r'\label{tab:ablation}',
         r'\begin{tabular}{lcccc}',
         r'\toprule',
-        'Configuration & PSNR$\uparrow$ & SSIM$\uparrow$ & UCIQE$\uparrow$ & UIQM$\uparrow$ \\\\',
+        r'Configuration & PSNR$\uparrow$ & SSIM$\uparrow$ & '
+        r'UCIQE$\uparrow$ & UIQM$\uparrow$ \\',
         r'\midrule',
     ]
 
@@ -301,10 +540,14 @@ def make_ablation_table_latex(ablation_results):
     return '\n'.join(lines)
 
 
+# =====================================================================
+#  Training loss curves
+# =====================================================================
+
 def plot_loss_curves(log_path, save_path):
     """
     Plot training loss curves from a JSON log file.
-    
+
     Args:
         log_path: path to training log (one JSON per line)
         save_path: output image path
@@ -314,7 +557,8 @@ def plot_loss_curves(log_path, save_path):
     import matplotlib.pyplot as plt
     import json
 
-    epochs, losses = [], {'total': [], 'rec': [], 'phy': [], 'freq': [], 'edge': []}
+    epochs = []
+    losses = {'total': [], 'rec': [], 'phy': [], 'freq': [], 'edge': []}
     with open(log_path, 'r') as f:
         for line in f:
             entry = json.loads(line.strip())

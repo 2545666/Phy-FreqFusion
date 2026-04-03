@@ -1,17 +1,35 @@
 """
-Dataset loaders for UIEB and EUVP benchmarks.
+Dataset loaders for UIE benchmarks.
+
+Supported datasets:
+  - UIEB  (890 paired images, standard 800/90 split)
+  - EUVP  (trainA/trainB + validation splits)
+  - LSUI  (large-scale paired dataset for generalization)
+  - RUIE  (real-world unpaired dataset, no-reference eval only)
 
 Expected directory structures:
+
   UIEB/
     raw/           # 890 degraded images
     reference/     # 890 reference images (same filenames)
-    
+
   EUVP/
     underwater_dark/  or  underwater_scenes/
       trainA/      # degraded
       trainB/      # reference
       validation/
-        ...
+        input/
+        target/
+
+  LSUI/
+    input/         # degraded underwater images
+    GT/            # ground-truth reference images (same filenames)
+
+  RUIE/
+    UCCS/          # color cast subset     (no GT)
+    UIQS/          # image quality subset  (no GT)
+    UHTS/          # hazy/turbid subset    (no GT)
+    # ---- OR a flat folder of images for simple evaluation ----
 """
 
 import os
@@ -23,6 +41,10 @@ from torch.utils.data import Dataset
 import torchvision.transforms as T
 import torchvision.transforms.functional as TF
 
+
+# =============================================================================
+#  Base Paired Dataset (unchanged logic)
+# =============================================================================
 
 class PairedUIEDataset(Dataset):
     """
@@ -98,10 +120,14 @@ class PairedUIEDataset(Dataset):
         }
 
 
+# =============================================================================
+#  UIEB Dataset  (UNCHANGED — preserves standard 800:90 split)
+# =============================================================================
+
 class UIEBDataset(PairedUIEDataset):
     """
     UIEB dataset (890 paired images).
-    
+
     Args:
         root:  path to UIEB/ directory
         split: 'train' (first 800) or 'test' (last 90)
@@ -119,10 +145,14 @@ class UIEBDataset(PairedUIEDataset):
         print(f"[UIEB-{split}] Using {len(self.pairs)} images")
 
 
+# =============================================================================
+#  EUVP Dataset  (UNCHANGED)
+# =============================================================================
+
 class EUVPDataset(PairedUIEDataset):
     """
     EUVP dataset (multiple scene subsets).
-    
+
     Args:
         root:    path to EUVP/{scene}/ directory
         split:   'train' or 'val'
@@ -137,6 +167,127 @@ class EUVPDataset(PairedUIEDataset):
             augment = False
         super().__init__(input_dir, target_dir, img_size, augment)
 
+
+# =============================================================================
+#  NEW — LSUI Dataset  (paired, for full-reference generalization eval)
+# =============================================================================
+
+class LSUIDataset(PairedUIEDataset):
+    """
+    LSUI (Large-Scale Underwater Image) dataset.
+
+    Expected layout:
+        LSUI/
+          input/    # degraded underwater images
+          GT/       # ground-truth references  (matching filenames)
+
+    Since this is used purely for generalization testing, augmentation
+    defaults to False and no train/test split is applied — we evaluate
+    on all available pairs.
+
+    Args:
+        root:       path to LSUI/ directory
+        img_size:   evaluation resolution (default 256)
+        max_samples: optional cap on number of images (useful for quick runs)
+    """
+    def __init__(self, root, img_size=256, max_samples=None):
+        input_dir = os.path.join(root, 'input')
+        target_dir = os.path.join(root, 'GT')
+
+        # Fall back to alternative folder names that some LSUI mirrors use
+        if not os.path.isdir(input_dir):
+            input_dir = os.path.join(root, 'raw')
+        if not os.path.isdir(target_dir):
+            target_dir = os.path.join(root, 'reference')
+
+        super().__init__(input_dir, target_dir, img_size,
+                         augment=False, max_samples=max_samples)
+        print(f"[LSUI] Loaded {len(self.pairs)} paired images for evaluation")
+
+
+# =============================================================================
+#  NEW — RUIE Dataset  (unpaired, no-reference evaluation only)
+# =============================================================================
+
+class RUIEDataset(Dataset):
+    """
+    RUIE (Real-world Underwater Image Enhancement) dataset.
+
+    RUIE contains three challenge subsets with NO ground-truth references:
+      - UCCS  (Underwater Color Cast Set)
+      - UIQS  (Underwater Image Quality Set)
+      - UHTS  (Underwater Hazy/Turbid Set)
+
+    This loader can point at any single subset folder or the RUIE root
+    (in which case it merges all subsets).
+
+    Evaluation is limited to no-reference metrics (UCIQE, UIQM).
+
+    Expected layouts (either works):
+        RUIE/UCCS/  *.png|*.jpg ...
+        RUIE/UIQS/  *.png|*.jpg ...
+        RUIE/UHTS/  *.png|*.jpg ...
+      OR
+        RUIE/       *.png|*.jpg ...          (flat folder)
+
+    Args:
+        root:       path to RUIE/ or a specific subset folder
+        subset:     None (auto-detect / all), 'UCCS', 'UIQS', or 'UHTS'
+        img_size:   evaluation resolution
+        max_samples: optional cap
+    """
+    VALID_EXT = {'.png', '.jpg', '.jpeg', '.bmp', '.tiff'}
+
+    def __init__(self, root, subset=None, img_size=256, max_samples=None):
+        super().__init__()
+        self.img_size = img_size
+        self.files = []
+
+        if subset is not None:
+            # Load a specific subset
+            subset_dir = os.path.join(root, subset)
+            self.files = self._scan_dir(subset_dir)
+        else:
+            # Try known subset folders first
+            for sub in ['UCCS', 'UIQS', 'UHTS']:
+                sub_dir = os.path.join(root, sub)
+                if os.path.isdir(sub_dir):
+                    self.files.extend(self._scan_dir(sub_dir))
+            # If none found, treat root as a flat image folder
+            if not self.files:
+                self.files = self._scan_dir(root)
+
+        self.files.sort()
+        if max_samples and len(self.files) > max_samples:
+            self.files = self.files[:max_samples]
+
+        print(f"[RUIE] Loaded {len(self.files)} images "
+              f"(no-reference evaluation only)")
+
+    def _scan_dir(self, dirpath):
+        if not os.path.isdir(dirpath):
+            return []
+        return [str(f) for f in Path(dirpath).iterdir()
+                if f.suffix.lower() in self.VALID_EXT]
+
+    def __len__(self):
+        return len(self.files)
+
+    def __getitem__(self, idx):
+        path = self.files[idx]
+        img = Image.open(path).convert('RGB')
+        img = TF.resize(img, self.img_size)
+        img = TF.center_crop(img, self.img_size)
+        img = TF.to_tensor(img)
+        return {
+            'input': img,
+            'filename': os.path.basename(path),
+        }
+
+
+# =============================================================================
+#  TestDataset  (UNCHANGED — generic single-image inference loader)
+# =============================================================================
 
 class TestDataset(Dataset):
     """Single-image test dataset (no ground truth needed)."""
