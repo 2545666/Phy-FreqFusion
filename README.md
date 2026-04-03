@@ -1,9 +1,6 @@
 # Phy-FreqFusion
 
 **Wideband Physics-Guided and SNR-Aware Spatial-Frequency Interactive Network for Underwater Image Enhancement**
-
-> IEEE Conference Paper Implementation
-
 ---
 
 ## Architecture Overview
